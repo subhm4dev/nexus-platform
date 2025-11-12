@@ -1,0 +1,795 @@
+version: '3.8'
+
+services:
+  # IAM Service
+  iam:
+    image: ${IAM_IMAGE:-subhm4dev/nexus-shared-iam:latest}
+    container_name: nexus-iam
+    ports:
+      - "8081:8080"
+    environment:
+      - SPRING_DATASOURCE_URL=jdbc:postgresql://postgres:5432/ecom_iam
+      - SPRING_DATASOURCE_USERNAME=${POSTGRES_USER:-postgres}
+      - SPRING_DATASOURCE_PASSWORD=${POSTGRES_PASSWORD:-postgres}
+      - SPRING_REDIS_HOST=redis
+      - SPRING_REDIS_PORT=6379
+      - PASSWORD_PEPPER=${PASSWORD_PEPPER}
+      - GITHUB_TOKEN=${GITHUB_TOKEN}
+      - SPRING_CONFIG_IMPORT=optional:configserver:http://config-server:8888
+      - JAVA_OPTS=-Xmx256m -Xms128m
+      - BPL_JVM_THREAD_COUNT=50
+      - BPL_JVM_HEAD_ROOM=0
+    depends_on:
+      config-server:
+        condition: service_started
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    networks:
+      - ecom-network
+    mem_limit: 768m
+    restart: unless-stopped
+    # Note: Healthcheck disabled because distroless containers don't have shell/tools
+    # Gateway will retry connecting to IAM (it has restart: unless-stopped)
+    # IAM typically takes ~105 seconds to fully start
+    # Gateway's JWKS initialization will retry until IAM is ready
+
+  # User Profile Service
+  user-profile:
+    image: ${USER_PROFILE_IMAGE:-subhm4dev/nexus-shared-user-profile:latest}
+    container_name: nexus-user-profile
+    ports:
+      - "8082:8080"
+    environment:
+      - SPRING_DATASOURCE_URL=jdbc:postgresql://postgres:5432/ecom_user_profile
+      - SPRING_DATASOURCE_USERNAME=${POSTGRES_USER:-postgres}
+      - SPRING_DATASOURCE_PASSWORD=${POSTGRES_PASSWORD:-postgres}
+      - SPRING_REDIS_HOST=redis
+      - SPRING_REDIS_PORT=6379
+      - KAFKA_BOOTSTRAP_SERVERS=kafka:29092
+      - GITHUB_TOKEN=${GITHUB_TOKEN}
+      - SPRING_CONFIG_IMPORT=optional:configserver:http://config-server:8888
+      - IDENTITY_SERVICE_URL=http://iam:8080
+      - JAVA_OPTS=-Xmx256m -Xms128m
+      - BPL_JVM_THREAD_COUNT=50
+      - BPL_JVM_HEAD_ROOM=0
+    depends_on:
+      gateway:
+        condition: service_started
+      iam:
+        condition: service_started
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      kafka:
+        condition: service_healthy
+    networks:
+      - ecom-network
+    mem_limit: 768m
+    restart: unless-stopped
+
+  # Address Service
+  address:
+    image: ${ADDRESS_IMAGE:-subhm4dev/nexus-shared-address:latest}
+    container_name: nexus-address
+    ports:
+      - "8083:8080"
+    environment:
+      - SPRING_DATASOURCE_URL=jdbc:postgresql://postgres:5432/ecom_address
+      - SPRING_DATASOURCE_USERNAME=${POSTGRES_USER:-postgres}
+      - SPRING_DATASOURCE_PASSWORD=${POSTGRES_PASSWORD:-postgres}
+      - SPRING_REDIS_HOST=redis
+      - SPRING_REDIS_PORT=6379
+      - GITHUB_TOKEN=${GITHUB_TOKEN}
+      - SPRING_CONFIG_IMPORT=optional:configserver:http://config-server:8888
+      - IDENTITY_SERVICE_URL=http://iam:8080
+      - JAVA_OPTS=-Xmx256m -Xms128m
+      - BPL_JVM_THREAD_COUNT=50
+      - BPL_JVM_HEAD_ROOM=0
+    depends_on:
+      user-profile:
+        condition: service_started
+      iam:
+        condition: service_started
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    networks:
+      - ecom-network
+    mem_limit: 768m
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://localhost:8080/actuator/health || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+
+  # Payment Service
+  payment:
+    image: ${PAYMENT_IMAGE:-subhm4dev/nexus-shared-payment:latest}
+    container_name: nexus-payment
+    ports:
+      - "8089:8080"
+    environment:
+      - SPRING_DATASOURCE_URL=jdbc:postgresql://postgres:5432/ecom_payment
+      - SPRING_DATASOURCE_USERNAME=${POSTGRES_USER:-postgres}
+      - SPRING_DATASOURCE_PASSWORD=${POSTGRES_PASSWORD:-postgres}
+      - SPRING_REDIS_HOST=redis
+      - SPRING_REDIS_PORT=6379
+      - KAFKA_BOOTSTRAP_SERVERS=kafka:29092
+      - RAZORPAY_KEY_ID=${RAZORPAY_KEY_ID}
+      - RAZORPAY_KEY_SECRET=${RAZORPAY_KEY_SECRET}
+      - GITHUB_TOKEN=${GITHUB_TOKEN}
+      - SPRING_CONFIG_IMPORT=optional:configserver:http://config-server:8888
+      - IDENTITY_SERVICE_URL=http://iam:8080
+      - JAVA_OPTS=-Xmx256m -Xms128m
+      - BPL_JVM_THREAD_COUNT=50
+      - BPL_JVM_HEAD_ROOM=0
+    depends_on:
+      catalog:
+        condition: service_healthy
+      iam:
+        condition: service_started
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      kafka:
+        condition: service_healthy
+    networks:
+      - ecom-network
+    mem_limit: 768m
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://localhost:8080/actuator/health || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+
+  # Config Server
+  config-server:
+    image: ${CONFIG_SERVER_IMAGE:-subhm4dev/nexus-config-server:latest}
+    container_name: nexus-config-server
+    ports:
+      - "8888:8888"
+    environment:
+      - GITHUB_TOKEN=${GITHUB_TOKEN}
+      - GITHUB_USERNAME=${GITHUB_USERNAME:-subhm4dev}
+      - CONFIG_REPO_URI=${CONFIG_REPO_URI:-https://github.com/subhm4dev/nexus-platform.git}
+      - JAVA_OPTS=-Xmx512m -Xms256m
+      - BPL_JVM_THREAD_COUNT=50
+      - BPL_JVM_HEAD_ROOM=0
+    networks:
+      - ecom-network
+    mem_limit: 1.5g
+    restart: unless-stopped
+    # Healthcheck disabled - container is distroless (no shell). Service health can be verified via:
+    # curl http://localhost:8888/actuator/health
+    # The service is working correctly as verified by the health endpoint
+
+  # Gateway Service
+  gateway:
+    image: ${GATEWAY_IMAGE:-subhm4dev/nexus-shared-gateway:latest}
+    container_name: nexus-gateway
+    ports:
+      - "8080:8080"
+    environment:
+      - SPRING_CLOUD_CONFIG_URI=http://config-server:8888
+      - SPRING_REDIS_HOST=redis
+      - SPRING_REDIS_PORT=6379
+      - GITHUB_TOKEN=${GITHUB_TOKEN}
+      - SPRING_CONFIG_IMPORT=optional:configserver:http://config-server:8888
+      - IDENTITY_SERVICE_URL=http://iam:8080
+      - JAVA_OPTS=-Xmx256m -Xms128m
+      - BPL_JVM_THREAD_COUNT=50
+      - BPL_JVM_HEAD_ROOM=0
+    depends_on:
+      config-server:
+        condition: service_started
+      iam:
+        condition: service_started
+    networks:
+      - ecom-network
+    mem_limit: 768m
+    restart: unless-stopped
+    # Healthcheck disabled - container is distroless (no shell). Service health can be verified via:
+    # curl http://localhost:8080/actuator/health
+    # The service is working correctly as verified by the startup logs
+
+  # Cart Service
+  cart:
+    image: ${CART_IMAGE:-subhm4dev/nexus-ecommerce-cart:latest}
+    container_name: nexus-cart
+    ports:
+      - "8087:8080"
+    environment:
+      - SPRING_REDIS_HOST=redis
+      - SPRING_REDIS_PORT=6379
+      - GITHUB_TOKEN=${GITHUB_TOKEN}
+      - SPRING_CONFIG_IMPORT=optional:configserver:http://config-server:8888
+      - IDENTITY_SERVICE_URL=http://iam:8080
+      - JAVA_OPTS=-Xmx256m -Xms128m
+      - BPL_JVM_THREAD_COUNT=50
+      - BPL_JVM_HEAD_ROOM=0
+    depends_on:
+      catalog:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      iam:
+        condition: service_started
+    networks:
+      - ecom-network
+    mem_limit: 768m
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://localhost:8080/actuator/health || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+
+  # Catalog Service
+  catalog:
+    image: ${CATALOG_IMAGE:-subhm4dev/nexus-ecommerce-catalog:latest}
+    container_name: nexus-catalog
+    ports:
+      - "8084:8080"
+    environment:
+      - SPRING_DATASOURCE_URL=jdbc:postgresql://postgres:5432/ecom_catalog
+      - SPRING_DATASOURCE_USERNAME=${POSTGRES_USER:-postgres}
+      - SPRING_DATASOURCE_PASSWORD=${POSTGRES_PASSWORD:-postgres}
+      - SPRING_REDIS_HOST=redis
+      - SPRING_REDIS_PORT=6379
+      - KAFKA_BOOTSTRAP_SERVERS=kafka:29092
+      - GITHUB_TOKEN=${GITHUB_TOKEN}
+      - SPRING_CONFIG_IMPORT=optional:configserver:http://config-server:8888
+      - IDENTITY_SERVICE_URL=http://iam:8080
+      - JAVA_OPTS=-Xmx256m -Xms128m
+      - BPL_JVM_THREAD_COUNT=50
+      - BPL_JVM_HEAD_ROOM=0
+    depends_on:
+      address:
+        condition: service_healthy
+      iam:
+        condition: service_started
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      kafka:
+        condition: service_healthy
+    networks:
+      - ecom-network
+    mem_limit: 768m
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://localhost:8080/actuator/health || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+
+  # Checkout Service
+  checkout:
+    image: ${CHECKOUT_IMAGE:-subhm4dev/nexus-ecommerce-checkout:latest}
+    container_name: nexus-checkout
+    ports:
+      - "8088:8080"
+    environment:
+      - SPRING_REDIS_HOST=redis
+      - SPRING_REDIS_PORT=6379
+      - KAFKA_BOOTSTRAP_SERVERS=kafka:29092
+      - GITHUB_TOKEN=${GITHUB_TOKEN}
+      - SPRING_CONFIG_IMPORT=optional:configserver:http://config-server:8888
+      - IDENTITY_SERVICE_URL=http://iam:8080
+      - JAVA_OPTS=-Xmx256m -Xms128m
+      - BPL_JVM_THREAD_COUNT=50
+      - BPL_JVM_HEAD_ROOM=0
+    depends_on:
+      catalog:
+        condition: service_healthy
+      payment:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      kafka:
+        condition: service_healthy
+      iam:
+        condition: service_started
+    networks:
+      - ecom-network
+    mem_limit: 768m
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://localhost:8080/actuator/health || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+
+  # Order Service
+  order:
+    image: ${ORDER_IMAGE:-subhm4dev/nexus-ecommerce-order:latest}
+    container_name: nexus-order
+    ports:
+      - "8090:8080"
+    environment:
+      - SPRING_DATASOURCE_URL=jdbc:postgresql://postgres:5432/ecom_order
+      - SPRING_DATASOURCE_USERNAME=${POSTGRES_USER:-postgres}
+      - SPRING_DATASOURCE_PASSWORD=${POSTGRES_PASSWORD:-postgres}
+      - SPRING_REDIS_HOST=redis
+      - SPRING_REDIS_PORT=6379
+      - KAFKA_BOOTSTRAP_SERVERS=kafka:29092
+      - GITHUB_TOKEN=${GITHUB_TOKEN}
+      - SPRING_CONFIG_IMPORT=optional:configserver:http://config-server:8888
+      - IDENTITY_SERVICE_URL=http://iam:8080
+      - JAVA_OPTS=-Xmx256m -Xms128m
+      - BPL_JVM_THREAD_COUNT=50
+      - BPL_JVM_HEAD_ROOM=0
+    depends_on:
+      catalog:
+        condition: service_healthy
+      iam:
+        condition: service_started
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      kafka:
+        condition: service_healthy
+    networks:
+      - ecom-network
+    mem_limit: 768m
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://localhost:8080/actuator/health || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+
+  # Inventory Service
+  inventory:
+    image: ${INVENTORY_IMAGE:-subhm4dev/nexus-ecommerce-inventory:latest}
+    container_name: nexus-inventory
+    ports:
+      - "8085:8080"
+    environment:
+      - SPRING_DATASOURCE_URL=jdbc:postgresql://postgres:5432/ecom_inventory
+      - SPRING_DATASOURCE_USERNAME=${POSTGRES_USER:-postgres}
+      - SPRING_DATASOURCE_PASSWORD=${POSTGRES_PASSWORD:-postgres}
+      - SPRING_REDIS_HOST=redis
+      - SPRING_REDIS_PORT=6379
+      - KAFKA_BOOTSTRAP_SERVERS=kafka:29092
+      - GITHUB_TOKEN=${GITHUB_TOKEN}
+      - SPRING_CONFIG_IMPORT=optional:configserver:http://config-server:8888
+      - IDENTITY_SERVICE_URL=http://iam:8080
+      - JAVA_OPTS=-Xmx256m -Xms128m
+      - BPL_JVM_THREAD_COUNT=50
+      - BPL_JVM_HEAD_ROOM=0
+    depends_on:
+      catalog:
+        condition: service_healthy
+      iam:
+        condition: service_started
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      kafka:
+        condition: service_healthy
+    networks:
+      - ecom-network
+    mem_limit: 768m
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://localhost:8080/actuator/health || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+
+  # Promo Service
+  promo:
+    image: ${PROMO_IMAGE:-subhm4dev/nexus-ecommerce-promo:latest}
+    container_name: nexus-promo
+    ports:
+      - "8086:8080"
+    environment:
+      - SPRING_DATASOURCE_URL=jdbc:postgresql://postgres:5432/ecom_promo
+      - SPRING_DATASOURCE_USERNAME=${POSTGRES_USER:-postgres}
+      - SPRING_DATASOURCE_PASSWORD=${POSTGRES_PASSWORD:-postgres}
+      - SPRING_REDIS_HOST=redis
+      - SPRING_REDIS_PORT=6379
+      - GITHUB_TOKEN=${GITHUB_TOKEN}
+      - SPRING_CONFIG_IMPORT=optional:configserver:http://config-server:8888
+      - IDENTITY_SERVICE_URL=http://iam:8080
+      - JAVA_OPTS=-Xmx256m -Xms128m
+      - BPL_JVM_THREAD_COUNT=50
+      - BPL_JVM_HEAD_ROOM=0
+    depends_on:
+      catalog:
+        condition: service_healthy
+      iam:
+        condition: service_started
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    networks:
+      - ecom-network
+    mem_limit: 768m
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://localhost:8080/actuator/health || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+
+  # Search Service
+  search:
+    image: ${SEARCH_IMAGE:-subhm4dev/nexus-ecommerce-search:latest}
+    container_name: nexus-search
+    ports:
+      - "8092:8080"
+    environment:
+      - SPRING_DATASOURCE_URL=jdbc:postgresql://postgres:5432/ecom_search
+      - SPRING_DATASOURCE_USERNAME=${POSTGRES_USER:-postgres}
+      - SPRING_DATASOURCE_PASSWORD=${POSTGRES_PASSWORD:-postgres}
+      - SPRING_REDIS_HOST=redis
+      - SPRING_REDIS_PORT=6379
+      - KAFKA_BOOTSTRAP_SERVERS=kafka:29092
+      - GITHUB_TOKEN=${GITHUB_TOKEN}
+      - SPRING_CONFIG_IMPORT=optional:configserver:http://config-server:8888
+      - IDENTITY_SERVICE_URL=http://iam:8080
+      - JAVA_OPTS=-Xmx256m -Xms128m
+      - BPL_JVM_THREAD_COUNT=50
+      - BPL_JVM_HEAD_ROOM=0
+    depends_on:
+      catalog:
+        condition: service_healthy
+      iam:
+        condition: service_started
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      kafka:
+        condition: service_healthy
+    networks:
+      - ecom-network
+    mem_limit: 768m
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://localhost:8080/actuator/health || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+
+  # Fulfilment Service
+  fulfilment:
+    image: ${FULFILMENT_IMAGE:-subhm4dev/nexus-ecommerce-fulfilment:latest}
+    container_name: nexus-fulfilment
+    ports:
+      - "8091:8080"
+    environment:
+      - SPRING_DATASOURCE_URL=jdbc:postgresql://postgres:5432/ecom_fulfillment
+      - SPRING_DATASOURCE_USERNAME=${POSTGRES_USER:-postgres}
+      - SPRING_DATASOURCE_PASSWORD=${POSTGRES_PASSWORD:-postgres}
+      - SPRING_REDIS_HOST=redis
+      - SPRING_REDIS_PORT=6379
+      - KAFKA_BOOTSTRAP_SERVERS=kafka:29092
+      - GITHUB_TOKEN=${GITHUB_TOKEN}
+      - SPRING_CONFIG_IMPORT=optional:configserver:http://config-server:8888
+      - IDENTITY_SERVICE_URL=http://iam:8080
+      - JAVA_OPTS=-Xmx256m -Xms128m
+      - BPL_JVM_THREAD_COUNT=50
+      - BPL_JVM_HEAD_ROOM=0
+    depends_on:
+      catalog:
+        condition: service_healthy
+      iam:
+        condition: service_started
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_started
+      kafka:
+        condition: service_started
+    networks:
+      - ecom-network
+    mem_limit: 768m
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://localhost:8080/actuator/health || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+
+  # Healthcare Domain Services
+
+  # Doctor Service
+  doctor-service:
+    image: ${DOCTOR_SERVICE_IMAGE:-subhm4dev/nexus-healthcare-doctor:latest}
+    container_name: nexus-doctor-service
+    ports:
+      - "8093:8080"
+    environment:
+      - SPRING_DATASOURCE_URL=jdbc:postgresql://postgres:5432/healthcare_doctor
+      - SPRING_DATASOURCE_USERNAME=${POSTGRES_USER:-postgres}
+      - SPRING_DATASOURCE_PASSWORD=${POSTGRES_PASSWORD:-postgres}
+      - SPRING_REDIS_HOST=redis
+      - SPRING_REDIS_PORT=6379
+      - KAFKA_BOOTSTRAP_SERVERS=kafka:29092
+      - GITHUB_TOKEN=${GITHUB_TOKEN}
+      - SPRING_CONFIG_IMPORT=optional:configserver:http://config-server:8888
+      - IDENTITY_SERVICE_URL=http://iam:8080
+      - JAVA_OPTS=-Xmx256m -Xms128m
+      - BPL_JVM_THREAD_COUNT=50
+      - BPL_JVM_HEAD_ROOM=0
+    depends_on:
+      iam:
+        condition: service_started
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      kafka:
+        condition: service_healthy
+    networks:
+      - ecom-network
+    mem_limit: 768m
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://localhost:8080/actuator/health || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+
+  # Patient Service
+  patient-service:
+    image: ${PATIENT_SERVICE_IMAGE:-subhm4dev/nexus-healthcare-patient:latest}
+    container_name: nexus-patient-service
+    ports:
+      - "8094:8080"
+    environment:
+      - SPRING_DATASOURCE_URL=jdbc:postgresql://postgres:5432/healthcare_patient
+      - SPRING_DATASOURCE_USERNAME=${POSTGRES_USER:-postgres}
+      - SPRING_DATASOURCE_PASSWORD=${POSTGRES_PASSWORD:-postgres}
+      - SPRING_REDIS_HOST=redis
+      - SPRING_REDIS_PORT=6379
+      - KAFKA_BOOTSTRAP_SERVERS=kafka:29092
+      - GITHUB_TOKEN=${GITHUB_TOKEN}
+      - SPRING_CONFIG_IMPORT=optional:configserver:http://config-server:8888
+      - IDENTITY_SERVICE_URL=http://iam:8080
+      - JAVA_OPTS=-Xmx256m -Xms128m
+      - BPL_JVM_THREAD_COUNT=50
+      - BPL_JVM_HEAD_ROOM=0
+    depends_on:
+      iam:
+        condition: service_started
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      kafka:
+        condition: service_healthy
+    networks:
+      - ecom-network
+    mem_limit: 768m
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://localhost:8080/actuator/health || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+
+  # Appointment Service
+  appointment-service:
+    image: ${APPOINTMENT_SERVICE_IMAGE:-subhm4dev/nexus-healthcare-appointment:latest}
+    container_name: nexus-appointment-service
+    ports:
+      - "8095:8080"
+    environment:
+      - SPRING_DATASOURCE_URL=jdbc:postgresql://postgres:5432/healthcare_appointment
+      - SPRING_DATASOURCE_USERNAME=${POSTGRES_USER:-postgres}
+      - SPRING_DATASOURCE_PASSWORD=${POSTGRES_PASSWORD:-postgres}
+      - SPRING_REDIS_HOST=redis
+      - SPRING_REDIS_PORT=6379
+      - KAFKA_BOOTSTRAP_SERVERS=kafka:29092
+      - GITHUB_TOKEN=${GITHUB_TOKEN}
+      - SPRING_CONFIG_IMPORT=optional:configserver:http://config-server:8888
+      - IDENTITY_SERVICE_URL=http://iam:8080
+      - JAVA_OPTS=-Xmx256m -Xms128m
+      - BPL_JVM_THREAD_COUNT=50
+      - BPL_JVM_HEAD_ROOM=0
+    depends_on:
+      doctor-service:
+        condition: service_healthy
+      patient-service:
+        condition: service_healthy
+      payment:
+        condition: service_healthy
+      iam:
+        condition: service_started
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      kafka:
+        condition: service_healthy
+    networks:
+      - ecom-network
+    mem_limit: 768m
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://localhost:8080/actuator/health || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+
+  # Session Service
+  session-service:
+    image: ${SESSION_SERVICE_IMAGE:-subhm4dev/nexus-healthcare-session:latest}
+    container_name: nexus-session-service
+    ports:
+      - "8096:8080"
+    environment:
+      - SPRING_DATASOURCE_URL=jdbc:postgresql://postgres:5432/healthcare_session
+      - SPRING_DATASOURCE_USERNAME=${POSTGRES_USER:-postgres}
+      - SPRING_DATASOURCE_PASSWORD=${POSTGRES_PASSWORD:-postgres}
+      - SPRING_REDIS_HOST=redis
+      - SPRING_REDIS_PORT=6379
+      - KAFKA_BOOTSTRAP_SERVERS=kafka:29092
+      - GITHUB_TOKEN=${GITHUB_TOKEN}
+      - SPRING_CONFIG_IMPORT=optional:configserver:http://config-server:8888
+      - IDENTITY_SERVICE_URL=http://iam:8080
+      - JAVA_OPTS=-Xmx256m -Xms128m
+      - BPL_JVM_THREAD_COUNT=50
+      - BPL_JVM_HEAD_ROOM=0
+    depends_on:
+      iam:
+        condition: service_started
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      kafka:
+        condition: service_healthy
+    networks:
+      - ecom-network
+    mem_limit: 768m
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://localhost:8080/actuator/health || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+
+  # Consultation Service
+  consultation-service:
+    image: ${CONSULTATION_SERVICE_IMAGE:-subhm4dev/nexus-healthcare-consultation:latest}
+    container_name: nexus-consultation-service
+    ports:
+      - "8097:8080"
+    environment:
+      - SPRING_DATASOURCE_URL=jdbc:postgresql://postgres:5432/healthcare_consultation
+      - SPRING_DATASOURCE_USERNAME=${POSTGRES_USER:-postgres}
+      - SPRING_DATASOURCE_PASSWORD=${POSTGRES_PASSWORD:-postgres}
+      - SPRING_REDIS_HOST=redis
+      - SPRING_REDIS_PORT=6379
+      - KAFKA_BOOTSTRAP_SERVERS=kafka:29092
+      - GITHUB_TOKEN=${GITHUB_TOKEN}
+      - SPRING_CONFIG_IMPORT=optional:configserver:http://config-server:8888
+      - IDENTITY_SERVICE_URL=http://iam:8080
+      - JAVA_OPTS=-Xmx256m -Xms128m
+      - BPL_JVM_THREAD_COUNT=50
+      - BPL_JVM_HEAD_ROOM=0
+    depends_on:
+      appointment-service:
+        condition: service_healthy
+      doctor-service:
+        condition: service_healthy
+      patient-service:
+        condition: service_healthy
+      iam:
+        condition: service_started
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      kafka:
+        condition: service_healthy
+    networks:
+      - ecom-network
+    mem_limit: 768m
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://localhost:8080/actuator/health || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+
+  # Notification Service
+  notification-service:
+    image: ${NOTIFICATION_SERVICE_IMAGE:-subhm4dev/nexus-healthcare-notification:latest}
+    container_name: nexus-notification-service
+    ports:
+      - "8098:8080"
+    environment:
+      - SPRING_DATASOURCE_URL=jdbc:postgresql://postgres:5432/healthcare_notification
+      - SPRING_DATASOURCE_USERNAME=${POSTGRES_USER:-postgres}
+      - SPRING_DATASOURCE_PASSWORD=${POSTGRES_PASSWORD:-postgres}
+      - SPRING_REDIS_HOST=redis
+      - SPRING_REDIS_PORT=6379
+      - KAFKA_BOOTSTRAP_SERVERS=kafka:29092
+      - GITHUB_TOKEN=${GITHUB_TOKEN}
+      - SPRING_CONFIG_IMPORT=optional:configserver:http://config-server:8888
+      - IDENTITY_SERVICE_URL=http://iam:8080
+      - JAVA_OPTS=-Xmx256m -Xms128m
+      - BPL_JVM_THREAD_COUNT=50
+      - BPL_JVM_HEAD_ROOM=0
+    depends_on:
+      iam:
+        condition: service_started
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      kafka:
+        condition: service_healthy
+    networks:
+      - ecom-network
+    mem_limit: 768m
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://localhost:8080/actuator/health || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+
+  # Report Service
+  report-service:
+    image: ${REPORT_SERVICE_IMAGE:-subhm4dev/nexus-healthcare-report:latest}
+    container_name: nexus-report-service
+    ports:
+      - "8099:8080"
+    environment:
+      - SPRING_DATASOURCE_URL=jdbc:postgresql://postgres:5432/healthcare_report
+      - SPRING_DATASOURCE_USERNAME=${POSTGRES_USER:-postgres}
+      - SPRING_DATASOURCE_PASSWORD=${POSTGRES_PASSWORD:-postgres}
+      - SPRING_REDIS_HOST=redis
+      - SPRING_REDIS_PORT=6379
+      - KAFKA_BOOTSTRAP_SERVERS=kafka:29092
+      - GITHUB_TOKEN=${GITHUB_TOKEN}
+      - SPRING_CONFIG_IMPORT=optional:configserver:http://config-server:8888
+      - IDENTITY_SERVICE_URL=http://iam:8080
+      - JAVA_OPTS=-Xmx256m -Xms128m
+      - BPL_JVM_THREAD_COUNT=50
+      - BPL_JVM_HEAD_ROOM=0
+    depends_on:
+      appointment-service:
+        condition: service_healthy
+      consultation-service:
+        condition: service_healthy
+      iam:
+        condition: service_started
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      kafka:
+        condition: service_healthy
+    networks:
+      - ecom-network
+    mem_limit: 768m
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://localhost:8080/actuator/health || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+
+networks:
+  ecom-network:
+    external: false
+

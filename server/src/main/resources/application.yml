@@ -1,0 +1,158 @@
+# Nexus Platform - Consolidated Configuration
+# Single Spring Modulith application configuration
+
+spring:
+  application:
+    name: nexus-platform
+  
+  # Single database for all modules (domain_id + tenant_id provide isolation)
+  datasource:
+    url: jdbc:postgresql://${DB_HOST:localhost}:${DB_PORT:5432}/${DB_NAME:nexus_db}
+    username: ${DB_USER:postgres}
+    password: ${DB_PASSWORD:postgres}
+    driver-class-name: org.postgresql.Driver
+  
+  jpa:
+    hibernate:
+      ddl-auto: validate
+    show-sql: false
+    properties:
+      hibernate:
+        dialect: org.hibernate.dialect.PostgreSQLDialect
+        format_sql: true
+    open-in-view: false
+  
+  # Flyway migrations
+  flyway:
+    enabled: true
+    locations: classpath:db/migration
+    baseline-on-migrate: true
+  
+  # Kafka for event publishing (can be replaced with Modulith events)
+  kafka:
+    bootstrap-servers: ${KAFKA_BOOTSTRAP_SERVERS:localhost:9092}
+    producer:
+      key-serializer: org.apache.kafka.common.serialization.StringSerializer
+      value-serializer: org.springframework.kafka.support.serializer.JsonSerializer
+    consumer:
+      group-id: nexus-platform
+      key-deserializer: org.apache.kafka.common.serialization.StringDeserializer
+      value-deserializer: org.springframework.kafka.support.serializer.JsonDeserializer
+      properties:
+        spring.json.trusted.packages: "*"
+  
+  # Redis for token blacklisting and caching
+  data:
+    redis:
+      host: ${REDIS_HOST:localhost}
+      port: ${REDIS_PORT:6379}
+      timeout: 2000ms
+      lettuce:
+        pool:
+          max-active: 8
+          max-idle: 8
+          min-idle: 0
+
+# Server configuration
+server:
+  port: 8080
+  error:
+    include-message: always
+    include-binding-errors: always
+    include-stacktrace: on_param
+    include-exception: false
+
+# Password hashing configuration (Salt + Pepper with Argon2id)
+password:
+  pepper: ${PASSWORD_PEPPER:IpWqGDoY8MzVFGh36riE6Iy5jX4Ei4FOfx2TZeC6KhK5V1CotSUlNPfh+fAVRSP/87+JOXys54RCK8Ds+6ci1lbn7yGB174SEaQtZkYdFSvDuqckth3xDO1/7XgaFMNLXBRgl6OrC0jzU4G5e9I4ZKqT7adwj1f01XySV7ur4sU=}
+argon2:
+  salt-length: 32
+  hash-length: 32
+  parallelism: 1
+  memory: 65536
+  iterations: 5
+
+# JWT Configuration
+jwt:
+  enabled: true
+  identity-service-url: ${IDENTITY_SERVICE_URL:http://localhost:8080}
+  jwks-endpoint: /.well-known/jwks.json
+  jwks-cache-refresh-interval-ms: ${JWKS_CACHE_REFRESH_INTERVAL_MS:300000}
+  access-token:
+    expiry-hours: 2
+  refresh-token:
+    expiry-days: 30
+
+# Razorpay Configuration
+razorpay:
+  key-id: ${RAZORPAY_KEY_ID:rzp_test_RdH1PD2IVUJ9xp}
+  key-secret: ${RAZORPAY_KEY_SECRET:0zYbnEqikpsp89WVocKKN36p}
+  webhook-secret: ${RAZORPAY_WEBHOOK_SECRET:webhook_secret_placeholder}
+
+# Gateway Configuration
+gateway:
+  public-paths:
+    - /api/v1/auth/register
+    - /api/v1/auth/login
+    - /api/v1/auth/refresh
+    - /.well-known/**
+    - /actuator/**
+    - /swagger-ui/**
+    - /v3/api-docs/**
+
+# Application environment configuration
+app:
+  environment: ${APP_ENVIRONMENT:development}
+  cookie:
+    domain: ${APP_COOKIE_DOMAIN:}
+    same-site-none: ${APP_COOKIE_SAME_SITE_NONE:false}
+
+# HTTP Client Configuration (for external services)
+http-client:
+  default-timeout: PT5S
+  connect-timeout: PT2S
+  read-timeout: PT5S
+  write-timeout: PT5S
+  response-timeout: PT10S
+  circuit-breaker:
+    enabled: true
+    failure-rate-threshold: 50.0
+    wait-duration-in-open-state: PT60S
+    ring-buffer-size-in-closed-state: 100
+    ring-buffer-size-in-half-open-state: 10
+  retry:
+    enabled: true
+    max-attempts: 3
+    wait-duration: PT1S
+  rate-limiter:
+    enabled: true
+    limit-for-period: 100
+    limit-refresh-period: PT1M
+    timeout-duration: PT5S
+
+# Actuator configuration
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info,prometheus,metrics
+  endpoint:
+    health:
+      show-details: when-authorized
+
+# Logging configuration
+logging:
+  level:
+    root: INFO
+    com.nexus: DEBUG
+    org.springframework.modulith: DEBUG
+    org.springframework.security: DEBUG
+
+# OpenAPI / Swagger configuration
+springdoc:
+  api-docs:
+    path: /v3/api-docs
+  swagger-ui:
+    path: /swagger-ui.html
+    enabled: true
+
